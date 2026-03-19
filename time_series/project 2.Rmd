@@ -1,0 +1,438 @@
+---
+title: "Project 2"
+author: "Danuta Grabovska"
+date: "2025-06-23"
+output: html_document
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+```{r}
+knitr::opts_chunk$set(dpi=300, fig.width=7, fig.height=4)
+library(tidyverse)
+library(forecast)   
+library(vars)       
+library(car)        
+library(neuralnet)  
+library(ggplot2)
+library(lmtest)
+library(dlm)
+library(readr)      
+library(dplyr)
+library(zoo)
+library(lubridate)   
+library(tibble)
+library(fGarch)     
+library(tseries)    
+library(FinTS)
+```
+
+# Task 1
+
+We start from loading the data.
+```{r}
+www1 <- "https://www.mimuw.edu.pl/~noble/courses/TimeSeries/data/aa-rv-20m.txt"
+aa <- read_table(www1, col_names = "vol")
+```
+
+```{r}
+y <- log(aa$vol)
+fit_arima <- Arima(y, order = c(0,1,1))
+fit_arima
+checkresiduals(fit_arima)
+```
+
+Now we need to build a local-level model as stated in the task:
+$$\begin{array}{lc}
+y_t = \mu_t + e_t & e_t \sim N(0, \sigma_e^2) \\
+\mu_t = \mu_{t-1} + \eta_t & \eta_t \sim N(0, \sigma_{\eta}^2)
+\end{array}$$
+
+```{r}
+theme_set(theme_bw())
+
+buildFun <- function(par){
+  dlmModPoly(order = 1, dV = exp(par[1]), dW = exp(par[2]))
+}
+
+init <- log(var(y) / 10)
+fit  <- dlmMLE(y, parm = c(init, init), build = buildFun)
+mod  <- buildFun(fit$par)                       
+
+filt <- dlmFilter(y, mod)                    
+smooth <- dlmSmooth(filt)                     
+
+sd_eps  <- sqrt(exp(fit$par[1]))
+sd_eta  <- sqrt(exp(fit$par[2]))
+cat("Standard deviation for epsilon:", round(sd_eps,4), "   Standard deviation for eta", round(sd_eta,4), "\n")
+
+df <- data.frame(
+  t        = seq_along(y),
+  obs      = y,
+  filtered = dropFirst(filt$m),   
+  smoothed = dropFirst(smooth$s)
+) |>
+  tidyr::pivot_longer(-t, names_to = "series", values_to = "value")
+
+ggplot(df, aes(t, value, colour = series)) +
+  geom_line() +
+  scale_colour_manual(values = c(obs = "black",
+                                 filtered = "red",
+                                 smoothed = "blue")) +
+  labs(title = "Local-level model",
+       x = "observation index", y = "log RV", colour = NULL)
+```
+
+# Task 2
+
+As always, we start from loading the dataset:
+```{r ex2-pfe}
+www2 <- "https://www.mimuw.edu.pl/~noble/courses/TimeSeries/data/m-pfesp-ex9003.txt"
+pf <- read_table(www2, col_names = c("pf","sp"))
+pf_ts <- ts(pf, start = c(1990,1), frequency = 12)
+plot(pf_ts)
+```
+
+First we need to fit a fixed-coefficient market model to the Pfizer stock returns. Fixed-coefficient model means CAPM with $\alpha$ and $\beta$ being time-invariant, therefore constant. So it is enough to fit a good old linear model.
+
+```{r}
+y  <- pf$pf
+x  <- pf$sp
+lm_capm <- lm(y ~ x)
+coeftest(lm_capm)
+```
+
+So our $\alpha$ was estimated as 0.0121814, and $\beta$ as 0.8512568. Both coefficients are statistically significant.
+
+Now it's time for a more interesting part, which is fitting a time-varying CAPM to the Pfizer stock return.
+Let's recall what is the form of this model:
+
+$$\begin{array}{ll}
+r_t = \alpha_t + \beta_t r_{M,t} + e_t & e_t \sim N(0, \sigma_e^2) \\
+\alpha_{t+1} = \alpha_t + \eta_t & \eta_t \sim N(0, \sigma_{\eta}^2) \\
+\beta_{t+1} = \beta_t + \epsilon_t & \epsilon_t \sim N(0, \sigma_{\epsilon}^2)
+\end{array}$$
+
+
+```{r}
+buildCAPM <- function(par){
+  dlmModReg(
+    X   = x,
+    dV  = exp(par[1]),             # observation variance  (scalar)
+    dW  = c(exp(par[2]),           # α_t innovation variance
+            exp(par[3]))           # β_t innovation variance
+  )
+}
+init <- rep(log(var(y)/20), 3)     # safe starting point
+fit  <- dlmMLE(y, parm = init, build = buildCAPM, control = list(maxit = 200))
+mod  <- buildCAPM(fit$par)        
+
+# 4. filter & smooth -------------------------------------------------
+flt <- dlmFilter(y, mod)
+sm  <- dlmSmooth(flt)
+
+alpha_sm <- drop(sm$s[-1, 1])      # first state  = α_t
+beta_sm  <- drop(sm$s[-1, 2])      # second state = β_t
+
+plot(beta_sm, type = "l", col = 4,
+     ylim = range(c(alpha_sm, beta_sm)),
+     ylab = "", xlab = "month",
+     main = expression(paste("Smoothed  ", beta[t], " (blue)  &  ", alpha[t], " (red)")))
+lines(alpha_sm, col = 2)
+legend("topleft",
+       legend = c(expression(beta[t]), expression(alpha[t])),
+       col = c(4,2), lty = 1, bty = "n")
+
+se_eps  <- sqrt(exp(fit$par[1]))
+se_alpha<- sqrt(exp(fit$par[2]))
+se_beta <- sqrt(exp(fit$par[3]))
+cat("σ_ε =", round(se_eps ,4),
+    " σ_α =", round(se_alpha,4),
+    " σ_β =", round(se_beta ,4), "\n")
+
+
+```
+
+# Task 3
+
+As always, we start from loading the dataset:
+
+```{r ex3-ppi}
+www3 <- "https://www.mimuw.edu.pl/~noble/courses/TimeSeries/data/m-ppiaco4709.txt"
+ppi <- read_table(www3, col_names = c("y","m","d","ppi"))
+ppi_ts <- ts(ppi$ppi, start = c(1947,1))
+plot(ppi_ts)
+```
+
+```{r}
+y    <- diff(log(ppi$ppi)) - mean(diff(log(ppi$ppi)))
+y_ts <- ts(y)
+ggtsdisplay(y_ts)
+```
+
+As stated in the task, let's fit a simple AR(3) model.
+
+```{r}
+
+ar3 <- arima(y, order = c(3,0,0))
+ar3
+coeftest(ar3)
+checkresiduals(ar3)
+```
+Okay, so the model we fitted is $y_t = 0.2873 y_{t-1} + 0.1226 y_{t-2} + 0.0903 y_{t-3}$.
+
+```{r}
+Tlen  <- length(y)
+
+build_AR3_me <- function(par){
+  phi  <- par[1:3]
+  Wvar <- exp(par[4])
+  Vvar <- exp(par[5])
+
+  GG   <- rbind(phi, c(1,0,0), c(0,1,0))     
+  FF   <- matrix(c(1,0,0), 1, 3)            
+
+  dlm(
+    FF = FF,
+    V  = matrix(Vvar, 1, 1),                 
+    GG = GG,
+    W  = matrix(0, 3, 3) + diag(c(Wvar, 0, 0)), 
+    m0 = c(0,0,0),
+    C0 = diag(1e6, 3)
+  )
+}
+
+
+start <- c(0.3, 0.1, 0.05, log(var(y)/50), log(var(y)/10))
+fit <- dlmMLE(y, parm = start, build = build_AR3_me, control = list(maxit=200))
+mod <- build_AR3_me(fit$par)     
+
+phi_hat  <- round(fit$par[1:3], 4)
+sig_eta  <- round(sqrt(exp(fit$par[4])), 5)
+sig_eps  <- round(sqrt(exp(fit$par[5])), 5)
+
+cat("Fitted AR(3) coefficients: φ1 =", phi_hat[1],
+    ", φ2 =", phi_hat[2], ", φ3 =", phi_hat[3], "\n")
+cat("Innovation s.d.  σ_η =", sig_eta,
+    ";  measurement-error s.d.  σ_ε =", sig_eps, "\n")
+
+kf  <- dlmFilter(y, mod)
+ks  <- dlmSmooth(kf)
+
+x_sm <- drop(ks$s[-1,1])         
+res_filt <- residuals(kf, type = "raw")$res
+
+par(mfrow=c(2,1), mar=c(3,4,2,1))
+plot(x_sm, type="l", col=4, main="Smoothed estimate of x_t", ylab="x_t")
+abline(h=0, col="grey")
+
+plot(res_filt, type="h", col=2, main="Filtered response residuals",
+     ylab="e_t  (one-step)", xlab="time")
+abline(h=0, col="grey")
+```
+
+# Task 4
+
+```{r ex4-ew}
+www4 <- "https://www.mimuw.edu.pl/~noble/courses/TimeSeries/data/d-ibm3dxwkdays8008.txt"
+ew <- read.table(www4, col.names = c("y","m","d","ibm","vw","ew","sp","mon","tu","we","th","fr"))
+
+ew <- within(ew, {ew  <- as.numeric(ew);
+                  mon <- as.numeric(mon); 
+                  tu <- as.numeric(tu); 
+                  we  <- as.numeric(we);
+                  th <- as.numeric(th);
+                  fr <- as.numeric(fr)})
+ew <- subset(ew, !is.na(ew))           
+
+fit_lm   <- lm(ew ~ mon + tu + we + th + fr, data = ew)
+resid_lm <- residuals(fit_lm)
+
+tsdisplay(resid_lm, main = "Regression residuals")
+checkresiduals(resid_lm)
+```
+There definitely are some correlations in the regression residuals - based on ACF, PACF an Ljung-Box test. Therefore, we need to build a suitable time series model on these residuals. Auto-fitted ARIMA still leaves some autocorrelation, therefore we use ARMA_GARCH. The coefficients were chosen manually based on their statistical significance, because (once again) auto-fitted ARMA was quite poor.
+```{r}
+garch_t <- garchFit(~ arma(3,2) + garch(1,1),
+                    data = resid_lm,
+                    cond.dist = "std",
+                    include.mean = FALSE,
+                    trace = FALSE)
+
+summary(garch_t)
+
+par(mfrow = c(2, 2), mar = c(3,4,2,1))
+
+plot(residuals(garch_t), type="l",
+     main = "GARCH standardized residuals")
+
+acf(residuals(garch_t), main = "ACF std. resid.")
+acf(residuals(garch_t)^2, main = "ACF squared resid.")
+
+archTest <- ArchTest(residuals(garch_t), lags = 12)
+
+mtext(paste("ARCH-LM p-value =",
+            round(archTest$p.value, 4)), side = 3, line = -2)
+
+
+par(mfrow=c(1,1))
+
+sigma_t <- garch_t@sigma.t            
+ew$cond_vol <- sigma_t
+
+cat("Last conditional volatility estimate (annualised):",
+    round(tail(sigma_t*sqrt(252), 1), 4), "\n")
+```
+
+# Task 5
+
+```{r task5-nn, echo=TRUE, message=FALSE, warning=FALSE}
+theme_set(theme_bw())
+
+ge <- read_table(
+  "https://www.mimuw.edu.pl/~noble/courses/TimeSeries/data/m-ge2608.txt")
+r <- as.numeric(ge$rtn)                     
+stopifnot(!anyNA(r))
+
+lagmat <- function(x, k) embed(x, k + 1)[ , -1]
+
+train <- head(r, length(r) - 36)
+test  <- tail(r, 36)
+
+train_reg <- data.frame(lagmat(train, 3))
+train_reg$y <- tail(train, -3)
+
+set.seed(123)
+nn_reg <- neuralnet(y ~ ., data = train_reg,
+                    hidden = 2, linear.output = TRUE)
+
+X_test <- lagmat(c(tail(train, 3), test), 3)           
+pred_reg <- as.numeric(compute(nn_reg, X_test)$net)
+mse_reg  <- mean((test - tail(pred_reg, 36))^2)
+
+df_plot <- data.frame(
+  idx  = seq_along(test),
+  actual = test,
+  pred   = tail(pred_reg, 36))
+
+p1 <- ggplot(df_plot, aes(idx)) +
+  geom_line(aes(y = actual, colour = "actual")) +
+  geom_line(aes(y = pred,   colour = "forecast")) +
+  labs(title = "Test-set: GE numeric forecast (3-2-1 NN)",
+       y = "return", x = "month") +
+  scale_colour_manual(values = c(actual = "black", forecast = "red"),
+                      name = "")
+p2 <- ggplot(df_plot, aes(idx, actual - pred)) +
+  geom_hline(yintercept = 0, colour = "grey") +
+  geom_line(colour = "steelblue") +
+  labs(title = "Forecast residuals", y = "error")
+
+print(p1); print(p2)
+cat("Numeric-NN test-set MSE =", round(mse_reg, 6), "\n")
+
+dr <- as.integer(r > 0)          # 1 = up, 0 = down
+
+train_cls <- data.frame(lagmat(train, 3),          
+                        lagmat(dr[1:length(train)], 3))  
+names(train_cls) <- paste0("x", 1:6)
+train_cls$target <- tail(dr[1:length(train)], -3)
+
+up_idx   <- which(train_cls$target == 1)
+down_idx <- which(train_cls$target == 0)
+
+set.seed(7)
+dup_down <- sample(down_idx, length(up_idx), replace = TRUE)
+balanced <- rbind(train_cls[up_idx, ], train_cls[dup_down, ])
+
+nn_bal <- neuralnet(target ~ ., balanced,
+                    hidden = 5, linear.output = FALSE)
+
+
+dr_test <- as.integer(test > 0)
+
+X_test_cls <- data.frame(
+  lagmat(c(tail(train, 3), test), 3),
+  lagmat(c(tail(dr[1:length(train)], 3), dr_test), 3))
+names(X_test_cls) <- paste0("x", 1:6)
+X_test_cls <- X_test_cls[-1, ]          
+
+prob      <- as.numeric(compute(nn_bal, X_test_cls)$net) 
+pred_dir  <- as.integer(prob > 0.5)
+
+mse_cls  <- mean((dr_test - pred_dir)^2)
+hit_rate <- mean(dr_test == pred_dir)
+dr_test <- dr_test[-1] 
+
+cat("Direction-NN test-set MSE =", round(mse_cls, 6),
+    " (hit-rate =", round(hit_rate, 3), ")\n")
+table(Pred = pred_dir, Actual = dr_test)
+
+```
+After balancing the classes and retraining a 6-5-1 feed-forward network, the out-of-sample hit-rate is 0.50, equal to random guessing. This indicates that $\{r_{t−1},r_{t−2},r_{t−3},$signs$\}$ carries no predictive power for next-month GE direction. The numeric 3-2-1 network did reduce MSE in levels, but direction remains unpredictable.
+
+# Task 6
+
+```{r ex6-usdeur, echo=TRUE, message=FALSE, warning=FALSE}
+www6 = "https://www.mimuw.edu.pl/~noble/courses/TimeSeries/data/USDEUR.csv"
+
+df_raw <- read_csv(
+  www6,
+  col_types = cols(.default = col_character())) %>%
+  transmute(date  = as.Date(`End Date`, format = "%Y-%m-%d"),
+            price = as.numeric(`USD/EUR`)) %>%
+  drop_na()
+
+stopifnot(!anyNA(df_raw$date), !anyNA(df_raw$price))
+df_raw_ts <- ts(df_raw$price)
+ggtsdisplay(df_raw_ts)
+```
+We decided to select 2011 as the training year and 2012 as testing year. Then, we fit auto-ARIMA on the training year. We decided to stop on ARIMA for several reasons: the simplicity of the model and its performance, as well as the fact that more complex neural or factor-based models add computational burden, but, per recent literature (https://www.sciencedirect.com/science/article/pii/S0164070414000470?utm_source=chatgpt.com, https://rogoff.scholars.harvard.edu/sites/g/files/omnuum5901/files/rogoff/files/51_jie1983.pdf), rarely outperform the random-walk benchmark at the weekly horizon, so ARIMA is the most defensible baseline.
+```{r}
+year1 <- 2011                      # training year
+year2 <- year1 + 1                 # test / forecast year
+
+train <- filter(df_raw, year(date) == year1)
+test  <- filter(df_raw, year(date) == year2)
+
+if(nrow(train) == 0 || nrow(test) == 0)
+  stop("Selected years not present in the series")
+
+ts_train <- ts(train$price, frequency = 52, start = c(year1, 1))
+fit <- auto.arima(ts_train, stepwise = FALSE, approximation = FALSE)
+
+fit
+checkresiduals(fit)
+coeftest(fit)
+```
+After that, we're ready to go with one-step forecasting loop:
+```{r}
+h <- nrow(test) 
+fc <- numeric(h)
+state <- ts_train
+
+for(i in seq_len(h)){
+  fit   <- Arima(state, model = fit)          
+  fc[i] <- forecast(fit, h = 1)$mean          
+  state <- ts(c(state, test$price[i]),        
+              frequency = 52, start = start(state))
+}
+```
+
+Finally, let's visualise what we got:
+```{r}
+plot(test$date, test$price, type="l", col="black",
+     main="Weekly forecast (red) vs actual (black)")
+lines(test$date, fc, col="red")
+legend("topleft", c("actual","forecast"), lty=1, col=c("black","red"))
+err <- test$price - fc
+cat("RMSE =", sqrt(mean(err^2)),
+    ";  MAE =", mean(abs(err)), "\n")
+plot(test$date, err, type="h", col="steelblue",
+     main="One-step forecast errors"); abline(h = 0, col = "grey")
+out <- tibble(date = test$date,
+              forecast = fc)
+out
+```
+As we can see, the fit is definitely acceptable along with its RMSE and MAE. One-step forecast errors are small and visually resemble white noise.

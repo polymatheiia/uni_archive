@@ -1,0 +1,351 @@
+---
+title: "Project 1"
+author: "Danuta Grabovska"
+date: "2025-06-22"
+output: html_document
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+```{r knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)}
+library(tidyverse)   
+library(fGarch)      
+library(forecast)   
+library(tseries)     
+library(lmtest)      
+library(aod)         
+library(vars)        
+library(urca)        
+```
+
+# Task 1
+
+To begin with, we should load the data:
+
+```{r}
+www <- "http://www.mimuw.edu.pl/~noble/courses/TimeSeries/data/sp5may.dat"
+sp <- read.table(www, header = T)
+head(sp)
+```
+
+Now let's take a look at each of the columns:
+
+```{r}
+sp_long <- sp %>%
+  mutate(index = row_number()) %>%        
+  pivot_longer(-index, names_to = "series", values_to = "value")
+
+ggplot(sp_long, aes(x = index, y = value, colour = series)) +
+  geom_line() +
+  facet_wrap(~series, scales = "free_y", ncol = 1) +
+  labs(x = "Observation (one‑minute index)", y = NULL,
+       title = "Raw one‑minute series: lnfuture, lnspot, cost") +
+  theme(legend.position = "none")
+```
+
+We can definitely see some trends in this data, so, as stated in the task, we consider the first differences: $y_t = f_t − f_{t-1}$ and $x_t = s_t − s_{t−1}$, where $f_t$ and $s_t$ are lnfuture and lnspot respectively.
+
+
+```{r diff_plots, fig.height=5, fig.width=7}
+library(forecast)   
+
+sp_diff <- sp %>%
+  mutate(
+    y = lnfuture - lag(lnfuture),
+    x = lnspot   - lag(lnspot)
+  ) %>%
+  drop_na()
+
+ggtsdisplay(sp_diff$y, main = "lnfuture first difference")
+
+ggtsdisplay(sp_diff$x,   main = "lnspot first difference")
+```
+
+Now we can build a regression model between these variables.
+
+```{r}
+ols_fit <- lm(y ~ x, data = sp_diff)
+summary(ols_fit)
+```
+
+We can see that our $\beta_0 = 1.354e-06$ and $\beta_1= 6.212e-01$. 
+
+Now we can move on to the residuals.
+
+```{r fig.height=5, fig.width=7}
+tsdisplay(residuals(ols_fit), main = "OLS residuals")
+Box.test(residuals(ols_fit), lag = 20, type = "Ljung-Box")
+```
+
+These residuals definitely aren't white noise - the ACF and PACF values for the first several lags, as well as the low p-value for the Ljung-Box statistic are strong indicators of that. So let's fit an ARMA model to the residuals.
+
+```{r}
+set.seed(1)
+arma_fit <- auto.arima(residuals(ols_fit), stationary = TRUE,
+                       seasonal = FALSE, stepwise = FALSE, approximation = FALSE)
+arma_fit
+checkresiduals(arma_fit)
+```
+
+Way better - now these residuals actually look like white noise with some proper normal distribution. Now let's restrict model selection to AR(p) and check for satisfactory model to improve over white noise.
+
+```{r}
+arma_fit <- auto.arima(residuals(ols_fit), stationary = TRUE,
+                       seasonal = FALSE, stepwise = FALSE, approximation = FALSE, max.q = 0, max.d = 0)
+arma_fit
+checkresiduals(arma_fit)
+```
+Well, is it an improvement over white noise? Yes. Is it satisfactory with that ACF and Ljung-Box statistics? Not necessarily - ARMA(1,1) did a way better job.
+
+Lastly, let's get the final coefficients and model accuracy.
+
+```{r}
+coeftest(ols_fit)            
+forecast::accuracy(ols_fit)  
+```
+---
+
+# Task 2
+
+As always, we start from loading the data and having a look at it.
+
+```{r}
+www2 <- "https://www.mimuw.edu.pl/~noble/courses/TimeSeries/data/q-gdpdef.txt"
+gdp=read.table(www2,header = T)
+head(gdp)
+gdp_ts <- ts(gdp$gdpdef, start = c(1947, 1), frequency = 4)
+```
+Let's plot it and see how it behaves.
+
+```{r}
+autoplot(gdp_ts) +
+  labs(title = "GDP Deflator (index)", x = NULL, y = NULL)
+```
+```{r}
+kpss.test(gdp_ts)
+```
+
+We can clearly see a linear trend here, so the series are definitely non-stationary: let's take a first difference and see what we get.
+
+```{r}
+infl_q <- diff(log(gdp_ts)) * 100     
+trend   <- seq_along(infl_q)
+
+ggtsdisplay(infl_q, main = "Quarter-to-quarter inflation, %")
+```
+```{r}
+kpss <- kpss.test(infl_q, null = "Level")
+adf <- adf.test(infl_q)
+kpss$p.value; adf$p.value
+```
+
+We can see that taking both of the tests into consideration, we are in some sort of "grey zone" when it comes to stationarity. It could mean some uncaptured structure, as well as conditional heteroskedasticity.
+We will try both ways: fitting an ARMA model as well as fitting ARMA-GARCH model and observe the results. As it is said that the data is seasonally adjusted, we will exclude any seasonality in our thought process.
+
+We'll start from simple auto ARIMA with d=0, as we already took the first difference.
+
+```{r}
+fit_auto <- auto.arima(infl_q,
+                       d = 0,
+                       seasonal      = FALSE,
+                       stepwise      = FALSE,
+                       approximation = FALSE,
+                       ic            = "aicc")
+fit_auto
+checkresiduals(fit_auto)
+```
+
+The Ljung-Box test results on the residuals are clearly unsatisfactory and we can see some spikes in the residuals ACF.
+Let's try to capture that by manually fitting an ARMA (8,0) model instead:
+
+```{r}
+fit_ar8 <- Arima(infl_q,
+                 order = c(8, 0, 0),
+                 include.constant = TRUE)
+fit_ar8
+checkresiduals(fit_ar8)
+coeftest(fit_ar8)
+```
+Way better - we can see an improvement in both AICc and Ljung-Box statistic, although the model is quite complicated.
+Now let's try an ARMA-GARCH model (when it comes to the parameters, I performed a manual search based on sthe statistic significance, so I won't include all of that here).
+
+```{r}
+fit <- garchFit(~ arma(4,4) + garch(1,1),
+                data       = infl_q,
+                cond.dist  = "norm",
+                include.mean = TRUE,
+                xreg       = trend,     
+                trace      = FALSE)
+
+summary(fit)
+```
+```{r}
+std.res <- residuals(fit, standardize = TRUE)
+
+ggtsdisplay(std.res, main = "Standardised GARCH residuals")
+print(Box.test(std.res,  lag = 16, type = "Ljung-Box"))   
+print(Box.test(std.res^2, lag = 16, type = "Ljung-Box")) 
+
+```
+It passes all the tests with flying colours - therefore we use this one as our model for forecasting.
+For some unknown reason the usual fGarch::predict didn't work and I couldn't troubleshoot it, so I found a way to do the prediction manually:
+
+```{r arma44-garch11-forecast, echo=TRUE, message=FALSE, warning=FALSE}
+garch_obj <- fit    
+h         <- 4        
+coef_vec <- coef(garch_obj)
+
+phi      <- coef_vec[grep("^ar", names(coef_vec))]      
+theta    <- coef_vec[grep("^ma", names(coef_vec))]      
+mu       <- coef_vec["mu"]
+
+omega    <- coef_vec["omega"]
+alpha1   <- coef_vec[grep("^alpha1", names(coef_vec))]
+beta1    <- coef_vec[grep("^beta1",  names(coef_vec))]
+
+p <- length(phi)   
+q <- length(theta)
+
+y  <- garch_obj@data         
+e  <- residuals(garch_obj)   
+s2 <- garch_obj@sigma.t^2   
+
+y_lag <- rev(tail(y, p))            
+e_lag <- rev(tail(e, q))             
+sig2  <- tail(s2, 1)                
+
+y_fc      <- numeric(h)
+sigma2_fc <- numeric(h)
+
+for (i in 1:h) {
+
+  y_hat <- mu +
+           sum(phi   * y_lag[1:p]) +
+           sum(theta * e_lag[1:q])
+  y_fc[i] <- y_hat
+
+  y_lag <- c(y_hat, head(y_lag, p - 1))
+  e_lag <- c(0, head(e_lag, q - 1))  
+
+  if (i == 1) {
+    sigma2_fc[i] <- omega + alpha1 * e_lag[2]^2 + beta1 * sig2
+  } else {
+    sigma2_fc[i] <- omega + (alpha1 + beta1) * sigma2_fc[i - 1]
+  }
+}
+
+se <- sqrt(sigma2_fc)
+out <- data.frame(
+  Quarter = paste0("2009 Q", 1:h),
+  Point   = round(y_fc,     2),
+  Lower95 = round(y_fc - 1.96 * se, 2),
+  Upper95 = round(y_fc + 1.96 * se, 2)
+)
+
+print(out)
+
+```
+
+---
+
+# Task 3
+
+As always, we'll start from loading and plotting the dataset:
+
+```{r}
+www3 <- "https://www.mimuw.edu.pl/~noble/courses/TimeSeries/data/m-ibmsp2608.txt"
+ibmsp=read.table(www3,header = T)
+ibm_ts <- ts(ibmsp$ibm, start = c(1926, 1), frequency = 12)
+sp_ts  <- ts(ibmsp$sp,  start = c(1926, 1), frequency = 12)
+
+autoplot(cbind(IBM = ibm_ts, SP = sp_ts)) +
+  facet_grid(vars(series), scales = "free_y") +
+  labs(title = "Monthly returns: IBM vs S&P 500", x = NULL, y = NULL)
+```
+We can definitely see some similarity, especially the volatile chunk in the beginning and a decrease in the end.
+
+Now we'll do the scatterplots: IBM versus S&P 500 at lags of 0 and ±1, as well as S&P 500 versus S&P 500 at lag 1.
+
+```{r scatter-&-ccf}
+lag <- function(x, k) dplyr::lag(x, k)
+
+df <- ibmsp %>%
+  transmute(
+    ibm_t    = ibm,
+    sp_t     = sp,
+    sp_lag1  = lag(sp,  1),   # SP_{t-1}
+    sp_lead1 = lead(sp, 1)    # SP_{t+1}
+  )
+
+pairs(df, labels = colnames(df))
+
+ccf(df$ibm_t, df$sp_t, main = "Cross-correlation IBM vs S&P")
+
+```
+Now let's try fitting a VAR model to the data.
+
+```{r}
+ibmsp_ts <- ts(ibmsp[,c("ibm","sp")], start = c(1926,1), frequency = 12)
+
+lag_select <- VARselect(ibmsp_ts, lag.max = 12, type = "const")
+lag_select$criteria
+best_p <- lag_select$selection["AIC(n)"]   
+
+var_best <- VAR(ibmsp_ts, p = best_p, type = "const")
+summary(var_best)
+serial.test(var_best, lags.pt = 16, type = "PT.asymptotic")
+
+```
+
+The best model appeared to be VAR(5).
+
+
+```{r lag4-wald-car, echo=TRUE, message=FALSE, warning=FALSE}
+library(car)
+
+# already fitted:
+var5 <- VAR(ibmsp_ts, p = 5, type = "const")
+
+## Wald test in IBM equation  (H0: ibm.l4 = sp.l4 = 0)
+lh_ibm <- linearHypothesis(
+  var5$varresult$ibm,
+  c("ibm.l4 = 0", "sp.l4 = 0"),
+  test = "Chisq")
+print(lh_ibm)
+
+## Wald test in S&P-500 equation  (same restriction)
+lh_sp <- linearHypothesis(
+  var5$varresult$sp,
+  c("ibm.l4 = 0", "sp.l4 = 0"),
+  test = "Chisq")
+print(lh_sp)
+
+```
+
+As we defined $H_0$: lag-4 coefficients are zero, we failed to reject it, therefore it is reasonable to delete them from the model.
+
+To check whether the current return of IBM stock is influence by past behaviour of the market
+index, we'll check the significance of first several lags of sp in the ibm equation. We can notice that sp.l1, sp.l2, and sp.l3 are significant, therefore we can conclude that it is a true statement.
+To check whether current return of IBM stock influence future behaviour of the market index, we do the same in reverse, so check the significance of first several lags of ibm in the sp equation. We can notice that only ibm.l5 is at least somehow significant, therefore the statement is not true.
+
+Lastly, we'll construct a VAR(p) models for the bivariate series.
+
+```{r}
+out <- map_dfr(1:16, function(p){
+  m   <- VAR(ibmsp_ts, p = p, type = "const")
+  lb  <- serial.test(m, lags.pt = 16,
+                     type = "PT.asymptotic")$serial$p.value
+  tibble(p = p,
+         AIC = AIC(m),
+         LBp = lb)
+})
+print(out)
+```
+
+
+So we choose the lowest p that eliminates the autocorrelation of the residuals - p=2.
+
+
+---

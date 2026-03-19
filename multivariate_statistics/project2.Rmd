@@ -1,0 +1,480 @@
+---
+title: "Project Assignment 2"
+author: "Danuta Grabovska"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r global, echo = FALSE, message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+library("ade4")
+library(rio)
+library(cluster)  
+library(stats)    
+library(graphics) 
+library("AER")
+library("MASS")
+library(pscl)
+library(caret)
+library(randomForest)  
+library(ggplot2)
+library(doParallel)
+library(foreach)
+library(kohonen)
+```
+
+
+# Exercise 1
+
+We begin from loading the data from course directory.
+```{r}
+www = "https://www.mimuw.edu.pl/~noble/courses/MultivariateStatistics/data/pendigits.txt"
+pendigits <- read.table(www)
+```
+
+The data need a bit of preprocessing, such as extracting the 16 input variables and the class labels.
+```{r}
+X <- pendigits[, 1:16]      
+classes <- pendigits[, 17]  
+```
+
+Now we can compute the variance of the 16 variables.
+```{r}
+var_vec <- sapply(X,var)
+print(var_vec)
+```
+
+
+## 2. Carry out PCA Using the Covariance Matrix
+
+Since the variables have similar scales, we perform PCA on the centered data only.
+```{r}
+pca_cov <- prcomp(X, center = TRUE, scale. = FALSE)
+summary(pca_cov)
+```
+
+## 3. How Many PCs Explain 80% and 90% of the Total Variation?
+From the summary visible above, we can conclude that 5 components explain 83.39% of variance, while 7 components explain 91.30% of variance.
+
+## 4. Display the First Three PCs Using Pairwise Scatterplots
+
+```{r}
+pairs(pca_cov$x[, 1:3],
+      main = "Pairwise Scatterplots of the First Three PCs (Covariance PCA)",
+      labels = c("PC1", "PC2", "PC3"))
+```
+
+
+## 5. Carry out PCA Using the Correlation Matrix
+
+Here we scale the variables so that PCA is based on the correlation matrix.
+```{r}
+pca_cor <- prcomp(X, center = TRUE, scale. = TRUE)
+summary(pca_cor)
+```
+
+
+# 6. Draw the Scree Plots for PCA (Covariance and Correlation)
+
+First we draw a Scree plot for PCA using the covariance matrix.
+```{r}
+screeplot(pca_cov, type = "lines", main = "Scree Plot (Covariance PCA)")
+```
+
+
+In this case I would use 5 or 7 principal components.
+
+Then we can draw a Scree plot for PCA using the correlation matrix.
+```{r}
+screeplot(pca_cor, type = "lines", main = "Scree Plot (Correlation PCA)")
+```
+
+
+Here I would use 4 or 7 principal components.
+
+
+## 7. Is There Ill-Conditioning in the Data Matrix?
+
+One way to assess ill-conditioning is to examine the condition number. A common measure is the ratio of the largest to the smallest eigenvalue.
+```{r}
+eigen_cov <- pca_cov$sdev^2
+cond_number <- max(eigen_cov) / min(eigen_cov)
+cat("Condition number (Covariance PCA):", cond_number, "\n")
+```
+
+The condition number we got is equal to 172.9239, which, taking the covariance spread between 24.36 and 4213.71 into consideration, is not too much. We can assume there is some moderate ill-conditioning. However, considering the fact that none of the principal components is degenerate, the occuring ill-conditioning is rather acceptable.
+
+# Exercise 2
+
+We begin from loading the data from course directory.
+```{r}
+www2 = "https://www.mimuw.edu.pl/~noble/courses/MultivariateStatistics/data/ozone.csv"
+ozone <- read.csv(www2)
+```
+
+Let's have a look into the dataset.
+```{r}
+head(ozone)
+```
+
+To perform a Mantel test, we need the matrices of the distances between stations and difference in ozone measurements.
+```{r}
+station.dists <- dist(cbind(ozone$Lon, ozone$Lat))
+ozone.dists <- dist(ozone$Av8top)
+as.matrix(station.dists)[1:5, 1:5]
+as.matrix(ozone.dists)[1:5, 1:5]
+```
+Now we can perform the Mantel test to check our hypothesis.
+```{r}
+mantel.rtest(station.dists, ozone.dists, nrepet = 9999)
+```
+Since we have statistically significant positive correlation between geographic distance and ozone difference, we can assume that indeed, the differences between ozone measurements are smaller for stations that are closer together.
+
+
+# Exercise 3
+
+We begin from loading the data from course directory.
+```{r}
+www3 = "https://www.mimuw.edu.pl/~noble/courses/MultivariateStatistics/data/primate.scapulae.xlsx"
+primate_data <- import(www3)
+```
+
+Then, before doing any clustering, we need to extract the 7 variables available for all specimens: indices AD.BD, AD.CD, EA.CD, Dx.CD, SH.ACR, as well as angles EAD and beta.
+```{r}
+primate_subset <- primate_data[, 2:8]
+```
+
+
+Since we wish to cluster the variables, we first standardize each variable.
+```{r}
+primate_scaled <- scale(primate_subset)
+```
+
+First we want to cluster variables. With data in the usual format (observations in rows, variables in columns) we need to transpose so that each row corresponds to one variable.
+```{r}
+var_matrix <- t(primate_scaled)  
+```
+Now, each row of var_matrix is one of the 7 variables.
+
+Before clustering, we need to compute the distance matrix between variables using Euclidean distance:
+```{r}
+d <- dist(var_matrix, method = "euclidean")
+```
+
+We'll start from hierarchical clustering with following linkage methods and corresponding dendrograms:
+
+```{r}
+par(mar = c(3, 3, 2, 2))
+#Single Linkage
+hc_single <- hclust(d, method = "single")
+plot(hc_single, main = "Single Linkage",
+     sub = "", xlab = "", ylab = "Euclidean distance")
+#Complete Linkage
+hc_complete <- hclust(d, method = "complete")
+plot(hc_complete, main = "Complete Linkage",
+     sub = "", xlab = "", ylab = "Euclidean distance")
+#Average Linkage 
+hc_average <- hclust(d, method = "average")
+plot(hc_average, main = "Average Linkage",
+     sub = "", xlab = "", ylab = "Euclidean distance")
+#Ward's Linkage
+hc_ward <- hclust(d, method = "ward.D2")
+plot(hc_ward, main = "Ward's Linkage",
+     sub = "", xlab = "", ylab = "Euclidean distance")
+```
+In the single linkage dendrogram, we can see that EAD variable joins the cluster quite late and can be considered an outlier. The other dendrograms tend to be quite balanced.
+
+Now let's consider divisive clustering using DIANA.
+```{r}
+diana_res <- diana(var_matrix)
+par(mfrow = c(1,1))
+plot(diana_res, main = "Divisive Clustering (DIANA)")
+```
+This dendrogram is also rather pleasantly balanced.
+
+Now we can move on  to the clustering of actual observations.
+
+First, we compute the distance matrix among observations:
+```{r}
+d_obs <- dist(primate_scaled, method = "euclidean")
+```
+
+Now we cluster the observations using beforementioned methods and cut the dendrograms to obtain 5 clusters:
+```{r}
+hc_single_obs   <- hclust(d_obs, method = "single")
+hc_complete_obs <- hclust(d_obs, method = "complete")
+hc_average_obs  <- hclust(d_obs, method = "average")
+hc_ward_obs     <- hclust(d_obs, method = "ward.D2")
+
+diana_res <- diana(primate_scaled)
+hc_diana_obs <- as.hclust(diana_res)
+
+clusters_single   <- cutree(hc_single_obs,   k = 5)
+clusters_complete <- cutree(hc_complete_obs, k = 5)
+clusters_average  <- cutree(hc_average_obs,  k = 5)
+clusters_ward     <- cutree(hc_ward_obs,     k = 5)
+clusters_diana    <- cutree(hc_diana_obs,    k = 5)
+```
+
+To compute misclassification rate, we'll define a function which creates the contingency table and sums the counts of the majority class in each cluster.
+```{r}
+misclass_rate <- function(true_labels, cluster_assignments) {
+  tab <- table(true_labels, cluster_assignments)
+  majority_counts <- apply(tab, 2, max)
+  total_majority <- sum(majority_counts)
+  total_obs <- length(true_labels)
+  rate <- 1 - total_majority / total_obs
+  return(rate)
+}
+```
+
+Now we apply the function to compute confusion tables and misclassification rates for each method.
+```{r}
+species <- primate_data$classdigit
+# Single Linkage
+conf_single <- table(Species = species, Cluster = clusters_single)
+mis_single <- misclass_rate(species, clusters_single)
+cat("Single Linkage:\n")
+print(conf_single)
+cat("Misclassification Rate:", mis_single, "\n\n")
+
+# Complete Linkage
+conf_complete <- table(Species = species, Cluster = clusters_complete)
+mis_complete <- misclass_rate(species, clusters_complete)
+cat("Complete Linkage:\n")
+print(conf_complete)
+cat("Misclassification Rate:", mis_complete, "\n\n")
+
+# Average Linkage
+conf_average <- table(Species = species, Cluster = clusters_average)
+mis_average <- misclass_rate(species, clusters_average)
+cat("Average Linkage:\n")
+print(conf_average)
+cat("Misclassification Rate:", mis_average, "\n\n")
+
+# Ward's Linkage
+conf_ward <- table(Species = species, Cluster = clusters_ward)
+mis_ward <- misclass_rate(species, clusters_ward)
+cat("Ward's Linkage:\n")
+print(conf_ward)
+cat("Misclassification Rate:", mis_ward, "\n\n")
+
+# Divisive Clustering (DIANA)
+conf_diana <- table(Species = species, Cluster = clusters_diana)
+mis_diana <- misclass_rate(species, clusters_diana)
+cat("Divisive Clustering (DIANA):\n")
+print(conf_diana)
+cat("Misclassification Rate:", mis_diana, "\n\n")
+```
+The most impressive result with the lowest misclassification rate was achieved by divisive clustering, while the highest rate (with quite a landslide) was given by single linkage.
+
+# Exercise 4
+
+We begin from loading the data from the AER library.
+```{r}
+data(DoctorVisits)
+```
+
+We shall start from using a Poisson regression for the number of visits. 
+```{r}
+dv_pois <- glm(visits~.,data=DoctorVisits, family=poisson)
+summary(dv_pois)
+```
+The AIC result is... rather underwhelming. We may suspect some overdispersion, so let's check for it:
+
+```{r}
+disp_test <- dispersiontest(dv_pois)
+print(disp_test)
+```
+Indeed, the overdispersion is present, therefore we should try other models.
+
+```{r}
+dv_nb <- glm.nb(visits~.,data=DoctorVisits)
+summary(dv_nb)
+```
+The shape parameter theta estimate is 0.9302, suggesting considerable overdispersion.
+
+We may check for other issues, for example proportions of zeros to the total amount of observations:
+```{r}
+zero_freq <- sum(DoctorVisits$visits == 0)
+total_obs <- nrow(DoctorVisits)
+cat("Proportion of zeros:", zero_freq / total_obs, "\n")
+```
+That is quite large - we should consider using a zero-inflated model, both Poisson and negative binomial one.
+```{r}
+dv_zip <- zeroinfl(visits~.,data=DoctorVisits, dist = "poisson")
+summary(dv_zip)
+dv_zinb <- zeroinfl(visits~.,data=DoctorVisits, dist = "negbin")
+summary(dv_zinb)
+```
+
+Now we can compare models via AIC measure.
+```{r}
+AIC_pois <- AIC(dv_pois)
+AIC_nb   <- AIC(dv_nb)
+AIC_zip  <- AIC(dv_zip)
+AIC_zinb  <- AIC(dv_zinb)
+
+cat("AIC (Poisson):", AIC_pois, "\n")
+cat("AIC (Negative Binomial):", AIC_nb, "\n")
+cat("AIC (Zero-Inflated Poisson Model):", AIC_zip, "\n")
+cat("AIC (Zero-Inflated Negative Binomial Model):", AIC_zinb, "\n")
+```
+We can clearly see that Zero-Inflated Negative Binomial Model is by far the best, proving the beforementioned considerations right.
+
+#Exercise 5
+As there were issues from importing the file using URL, we'll load it from a local file:
+```{r}
+load("/home/sool/Downloads/color.stimuli.rda")
+```
+
+We'll start from creating a dissimilarity matrix:
+```{r}
+dissim <- 1 - color.stimuli
+```
+
+Now we conduct a metric MDS and plot it:
+```{r}
+mds_classic <- cmdscale(dissim, k = 2)
+print(mds_classic)
+
+ord <- order(rownames(mds_classic))
+par(mfrow = c(1,1), mar = c(4,4,2,1))
+plot(mds_classic, type = "n", 
+     main = "Metric MDS Solution: Colour Circle", 
+     xlab = "Dimension 1", ylab = "Dimension 2")
+text(mds_classic, labels = rownames(mds_classic), col = "blue", cex = 1.2)
+# Connect points in the order of increasing wavelength:
+lines(mds_classic[ord, ], col = "darkblue", lwd = 2)
+```
+We can clearly see a nearly circular arrangement. What about a non-metric scaling?
+```{r}
+mds_nonmetric <- isoMDS(dissim, k = 2, trace = TRUE)
+print(mds_nonmetric$points)
+
+plot(mds_nonmetric$points, type = "n", 
+     main = "Non-metric MDS Solution: Colour Circle", 
+     xlab = "Dimension 1", ylab = "Dimension 2")
+text(mds_nonmetric$points, labels = rownames(mds_classic), col = "red", cex = 1.2)
+lines(mds_nonmetric$points[ord, ], col = "darkred", lwd = 2)
+```
+As we can see, there is very little difference between metric and non-metric scaling solution. We can therefore conclude that the data are consistent with a continuous perceptual dimension of hue.
+
+
+# Exercise 6
+
+As there were issues from importing the file using URL, we'll load it from a local file:
+```{r}
+load("/home/sool/Downloads/wdbc.rda")
+```
+
+In order to be able to use different number of variables selected
+as candidates for splitting and number of bootstrap trees in the forest, we shall define a following grid:
+```{r}
+mtry_values <- c(2, 4, 6, 8, 10)
+ntree_values <- c(100, 500, 1000, 1500)
+replications <- 1:100
+param_grid <- expand.grid(mtry = mtry_values, ntree = ntree_values, seed = replications)
+```
+
+Due to slightly higher computational complexity of this task, we set up a parallel background:
+```{r}
+numCores <- detectCores() - 1 
+cl <- makeCluster(numCores)
+registerDoParallel(cl)
+```
+
+Now we're able to run a loop for 100 replications and every value in our grid.
+```{r}
+results <- foreach(i = 1:nrow(param_grid), .combine = rbind, 
+                   .packages = c("caret", "randomForest")) %dopar% {
+                     
+                     this_row <- param_grid[i, ]
+                     current_mtry <- this_row$mtry
+                     current_ntree <- this_row$ntree
+                     current_seed <- this_row$seed
+                     
+                     # Set a unique seed for each repetition
+                     set.seed(1000 * current_mtry + current_ntree + current_seed)
+                     
+                     # Define trainControl to train the model on the full data
+                     tc <- trainControl(method = "none")
+                     
+                     # Train the random forest model 
+                     model <- train(class ~ ., 
+                                    data = wdbc, 
+                                    method = "rf",
+                                    tuneGrid = data.frame(mtry = current_mtry),
+                                    ntree = current_ntree,
+                                    trControl = tc)
+                     
+                     # Extract the OOB error from the final model.
+                     oob_error <- model$finalModel$err.rate[current_ntree, "OOB"]
+                     
+                     # Return a data frame with the parameters and the OOB error.
+                     data.frame(mtry = current_mtry,
+                                ntree = current_ntree,
+                                seed = current_seed,
+                                oob_error = oob_error)
+                   }
+# Stop the parallel cluster
+stopCluster(cl)
+```
+
+Now we cal visualize the results:
+```{r}
+ggplot(results, aes(x = factor(ntree), y = oob_error)) +
+  geom_boxplot(fill = "lightblue") +
+  facet_wrap(~ mtry, nrow = 1, labeller = label_both) +
+  labs(x = "Number of Trees (ntree)",
+       y = "OOB Misclassification Rate",
+       title = "OOB Misclassification Rates for Different mtry (m) and ntree (B)") +
+  theme_minimal()
+```
+We can observe the smallest and consistent variance in results with mtry = 6. It's also visible that increasing ntree number generally helps, though at some point it becomes unnecessary.
+
+
+Before performing batch-SOM analysis, we need some data preprocessing:
+```{r}
+data_features <- wdbc[, setdiff(names(wdbc), "class")]
+data_class    <- wdbc$class
+data_scaled <- scale(data_features)
+```
+
+Now we can create a grid and perform SOM analysis:
+```{r}
+som_grid <- somgrid(xdim = 5, ydim = 5, topo = "hexagonal", toroidal = TRUE)
+set.seed(123)  
+som_model <- som(data_scaled,
+                 grid = som_grid,
+                 rlen = 100,         
+                 mode = "batch",     
+                 keep.data = TRUE) 
+plot(som_model, type = "mapping",
+     labels = as.character(data_class),
+     main = "SOM Mapping with Tumor Classes")
+```
+To assess the quality of the clustering, we may first create a contingency table comparing the true class labels to the SOM node assignments:
+```{r}
+node_assignments <- som_model$unit.classif  # vector of node numbers for each observation
+class_table <- table(Class = data_class, SOM_Node = node_assignments)
+print(class_table)
+```
+
+We may also compute a simple "purity" measure for each SOM node, identifying the majority class and computing the proportion of cases in that node that belong to that class.
+```{r}
+purity_by_node <- sapply(split(data_class, node_assignments), function(classes) {
+  majority_count <- max(table(classes))
+  purity <- majority_count / length(classes)
+  return(purity)
+})
+cat("Purity of each SOM node:\n")
+print(purity_by_node)
+```
+Using this, we can compute overall purity as weighted average by the number of observations in each node.
+```{r}
+node_sizes <- table(node_assignments)
+overall_purity <- sum(purity_by_node * as.numeric(node_sizes)) / sum(node_sizes)
+cat("\nOverall purity:", overall_purity, "\n")
+```
+We can conclude that SOM does quite an impressive job clustering this tumors.

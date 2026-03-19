@@ -1,0 +1,192 @@
+---
+title: "Project Assignment 1"
+author: "Danuta Grabovska"
+date: "2024-12-02"
+output: html_document
+---
+
+```{r global, echo = FALSE, message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+library(rio)
+library(corrplot)
+library(pls)
+library(glmnet)
+library(MASS)
+library(boot)
+library(rpart)
+library(rpart.plot)
+```
+
+# Exercise 1
+We begin from loading the data from course directory.
+```{r}
+www = "https://www.mimuw.edu.pl/~noble/courses/MultivariateStatistics/data/bodyfat2.xlsx"
+bodyfat <- import(www)
+```
+
+Let's take a look at the data:
+```{r}
+head(bodyfat)
+```
+
+Seeing this, we can extract the explanatory variables and response variable:
+```{r}
+Y <- bodyfat$bodyfat
+X <- bodyfat[, 3:15]
+data_model <- cbind(Y, X)
+```
+
+Before performing regression analysis, we shall check the data for highly-correlated variables. Let's consider the correlations between the explanatory variables:
+Update: I have no idea why the knitted file displays the corrplot incorrectly - in Rmd it works well.
+```{r}
+cor_matrix <- cor(X)
+print(cor_matrix)
+
+corrplot(cor_matrix, method= "circle", type = "lower", tl.cex = 0.8)
+```
+We can clearly see a bunch of high pairwise correlations, which suggest some redundancy in the data.
+We may also check the condition number to prove our suspicions about ill-conditioning:
+```{r}
+# Compute the covariance matrix and its eigenvalues.
+cov_matrix <- cov(X)
+eigenvals <- eigen(cov_matrix)$values
+cond_number <- max(eigenvals) / min(eigenvals)
+cat("Condition number of the predictor covariance matrix:", cond_number, "\n")
+```
+The data are indeed ill-conditioned.
+
+Let's move on to the data analysis using PCR and PLS:
+```{r}
+#Principal Component Regression (PCR)
+set.seed(123)
+pcr_fit <- pcr(Y ~ ., data = data_model, validation = "LOO")
+summary(pcr_fit)
+validationplot(pcr_fit, val.type = "MSEP", main = "PCR: LOOCV MSEP")
+```
+```{r}
+#Partial Least Squares (PLS)
+pls_fit <- plsr(Y ~ ., data = data_model, validation = "LOO")
+summary(pls_fit)
+validationplot(pls_fit, val.type = "MSEP", main = "PLS: LOOCV MSEP")
+```
+We can clearly see that 3 components is the optimal amount in both cases. There is no big difference between the methods, although Partial Least Squares regression gives slightly better results.
+
+It's time to consider LASSO. We'll first need to fit the model across a grid of lambda values and then use LOOCV to find the optimal one. Then we'll fit the LASSO model using the optimal lambda.
+```{r}
+X_matrix <- as.matrix(X)
+
+lasso_fit <- glmnet(X_matrix, Y, alpha = 1)
+plot(lasso_fit, xvar = "lambda", label = TRUE, main = "LASSO Coefficient Paths")
+cv_lasso <- cv.glmnet(X_matrix, Y, alpha = 1, nfolds = nrow(X))
+opt_lambda <- cv_lasso$lambda.min
+cat("Optimal lambda:", opt_lambda, "\n")
+
+lasso_final <- glmnet(X_matrix, Y, alpha = 1, lambda = opt_lambda)
+cat("Coefficients of the final LASSO model:\n")
+print(coef(lasso_final))
+```
+In the end, we shall compare the beforementioned models and their performance on our dataset. To make it consistent with previous tasks, we'll use LOOCV mean squared prediction error (MSEP) as our performance measure.
+```{r}
+pcr_rmsep <- RMSEP(pcr_fit)$val[1,1,]
+pls_rmsep <- RMSEP(pls_fit)$val[1,1,]
+
+pcr_best_rmsep <- min(pcr_rmsep)
+pls_best_rmsep <- min(pls_rmsep)
+
+cat("PCR best RMSEP:", pcr_best_rmsep, "\n")
+cat("PLS best RMSEP:", pls_best_rmsep, "\n")
+
+lasso_best_rmse <- sqrt(min(cv_lasso$cvm))
+cat("LASSO best RMSEP:", lasso_best_rmse, "\n")
+```
+Based on that, we can conclude that LASSO is the most suitable model for this data.
+
+# Exercise 2
+We begin from loading the data from course directory.
+```{r}
+www2 = "https://www.mimuw.edu.pl/~noble/courses/MultivariateStatistics/data/carmarks.txt"
+carmarks <- read.table(www2, sep = ";", header = TRUE)
+head(carmarks)
+```
+We now split the dataset. Let the X variables be (price, value) and let the Y variables be (economy, service, design, sport, safety, easyiness).
+```{r}
+X <- carmarks[, c("PRICE", "VALUE")]
+Y <- carmarks[, c("ECONOMY", "SERVICE", "DESIGN", "SPORT", "SAFETY", "EASYINESS")]
+```
+Now we can perform canonical correlation analysis.
+```{r}
+cca <- cancor(X, Y)
+cca
+```
+We can now use these coefficients to compute and plot the canonical variates.
+```{r}
+U <- as.matrix(X) %*% cca$xcoef   
+V <- as.matrix(Y) %*% cca$ycoef 
+
+plot(U[,1], V[,1],
+     xlab = "Canonical Variate 1 (X)",
+     ylab = "Canonical Variate 1 (Y)",
+     main = "Scatterplot of First Canonical Variates",
+     pch = 19, col = "blue")
+abline(lm(V[,1] ~ U[,1]), col = "red", lwd = 2)
+```
+We can clearly notice a strong linear relationship between the marks for price and value and the marks for economy, service, design, sport, safety, and easyinesss. Based on the values of canonical coefficients, we can conclude that each variable provides a significant contribution and cannot be omitted.
+
+
+# Exercise 4
+As always, we begin from loading the data.
+```{r}
+www4 = "https://www.mimuw.edu.pl/~noble/courses/MultivariateStatistics/data/boston_corrected.txt"
+boston <- import(www4)
+```
+Now we shall spit the data into explanatory and response variables.
+```{r}
+boston$log_MEDV <- log(boston$MEDV)
+X <- as.matrix(boston[, c("CRIM", "ZN", "INDUS", "CHAS", "NOX", "RM", 
+                     "AGE", "DIS", "RAD", "TAX", "PTRATIO", "B", "LSTAT")])
+Y <- boston$log_MEDV
+```
+
+We can perform an OLS regression analysis.
+```{r}
+ols_model <- lm(log_MEDV ~ CRIM + ZN + INDUS + CHAS + NOX + RM +
+                AGE + DIS + RAD + TAX + PTRATIO + B + LSTAT, data = boston)
+summary(ols_model)
+```
+To assess whether the OLS regression is really effective, let's estimate directly the prediction error of it via leave-one-out cross-validation.
+```{r}
+loocv_ols_mse <- mean((ols_model$residuals / (1 - lm.influence(ols_model)$hat))^2)
+cat("OLS LOOCV Estimated MSE:", loocv_ols_mse, "\n")
+```
+The OLS is indeed effective, based on quite impressive MSE. We should still check whether other methods, such as LASSO regression, give better results.
+```{r}
+cv_lasso <- cv.glmnet(X, Y, alpha = 1)
+plot(cv_lasso, main = "LASSO: Cross-Validation Error")
+optimal_lambda <- cv_lasso$lambda.min
+cat("Optimal lambda (LASSO):", optimal_lambda, "\n")
+
+lasso_model <- glmnet(X, Y, alpha = 1, lambda = optimal_lambda)
+cat("LASSO Coefficients:\n")
+print(coef(lasso_model))
+
+lasso_cv_mse <- min(cv_lasso$cvm)
+cat("LASSO CV MSE:", lasso_cv_mse, "\n")
+```
+The MSE in LASSO is almost the same, though slightly higher.
+Now we may check out the Regression Tree method.
+```{r}
+tree_model <- rpart(log_MEDV ~ CRIM + ZN + INDUS + CHAS + NOX + RM +
+                      AGE + DIS + RAD + TAX + PTRATIO + B + LSTAT,
+                    data = boston, method = "anova")
+
+rpart.plot(tree_model, main = "Regression Tree for log(MEDV)")
+
+printcp(tree_model)
+```
+The model was quite fast in its computation time. Now we may compare the MSE of the three models. For the regression tree, we can extract the cross-validated error (xerror) from the complexity parameter table.
+```{r}
+cat("OLS LOOCV MSE:", loocv_ols_mse, "\n")
+cat("LASSO CV MSE:", lasso_cv_mse, "\n")
+tree_cp <- printcp(tree_model)
+```
+The prediction error in Regression Tree model is the highest, and the best model is the OLS regression.
