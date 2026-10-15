@@ -1,0 +1,10 @@
+.venv/
+.idea/
+__pycache__/
+*.pyc
+.Rhistory
+*.exe
+*.o
+*.7z
+*.zip
+cmake-build-*/
