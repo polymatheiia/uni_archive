@@ -1,0 +1,5 @@
+model,best_params,test_accuracy
+DecisionTree,max_depth=4,0.9432
+RandomForest,"{'max_depth': None, 'n_estimators': 300}",0.9386
+KNN,{'kneighborsclassifier__n_neighbors': 5},0.9205
+SVM (RBF),"{'svc__C': 10, 'svc__gamma': 0.01}",0.9477

@@ -1,0 +1,5 @@
+Country,Model,RMSE,AIC
+Poland,Holt-Winters (basic),1083.2156474766584,12372.603383317019
+Poland,"Holt-Winters (trend=add, seasonal=add, damped=True)",13.948253867262004,11943.13216450465
+Ukraine,Holt-Winters (basic),255.42651597847905,26987.99508538074
+Ukraine,"Holt-Winters (trend=add, seasonal=add, damped=True)",9.231930014339474,26530.71019926222
